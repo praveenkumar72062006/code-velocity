@@ -32,8 +32,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onLogin,
   onLogout,
 }) => {
-  const [googleEmail, setGoogleEmail] = useState('');
-  const [googleName, setGoogleName] = useState('');
+  const [googleEmail, setGoogleEmail] = useState('praveenkumar21092006@gmail.com');
+  const [googleName, setGoogleName] = useState('Praveen Kumar');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
@@ -220,9 +220,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <div className="flex items-center gap-3 my-2">
               <div className="flex-1 h-px bg-slate-800" />
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">or 1-click quick login</span>
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">or sign in with admin account</span>
               <div className="flex-1 h-px bg-slate-800" />
             </div>
+
+            {/* Instant Login as Praveen Kumar (Master Admin) */}
+            <button
+              onClick={() => handleGoogleSignIn('Praveen Kumar (Owner)', 'praveenkumar21092006@gmail.com')}
+              disabled={isSubmitting}
+              className="w-full py-2.5 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+            >
+              <Award className="w-4 h-4 text-amber-400" />
+              Sign in as Praveen Kumar (praveenkumar21092006@gmail.com)
+            </button>
 
             {/* Custom Gmail Input Form */}
             <form
