@@ -23,6 +23,8 @@ import {
   Swords,
   Ghost,
   Crown,
+  Shuffle,
+  LogOut,
 } from 'lucide-react';
 
 import { useTypingEngine, TypingStats } from './hooks/useTypingEngine';
@@ -32,6 +34,7 @@ import {
   CodeSnippet,
   SupportedLanguage,
   LANGUAGE_META,
+  getRandomSnippet,
 } from './data/codeSnippets';
 import { RaceTrack, Racer } from './components/RaceTrack';
 import { KeyboardHeatmap } from './components/KeyboardHeatmap';
@@ -43,6 +46,8 @@ import { AuthModal, UserAccount } from './components/AuthModal';
 import { LeaderboardTournamentModal } from './components/LeaderboardTournamentModal';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
 import { WS_SERVER_URL, getApiUrl } from './config';
+import { storageService } from './services/storageService';
+import { p2pEngine, generateRoomCode } from './services/multiplayerEngine';
 
 type GameMode = 'sprint' | 'equalizer' | 'boss_raid';
 
@@ -54,17 +59,28 @@ const INITIAL_SKINS: VehicleSkin[] = [
 ];
 
 export const App: React.FC = () => {
-  // Selected Language & Snippets
-  const [selectedLanguage, setSelectedLanguage] = useState<SupportedLanguage>('java');
-  const [activeSnippetIndex, setActiveSnippetIndex] = useState(0);
+  // Selected Language & Snippets (Randomized on first visit so each user gets unique code)
+  const [selectedLanguage, setSelectedLanguage] = useState<SupportedLanguage>(() => {
+    const saved = localStorage.getItem('vt_last_lang') as SupportedLanguage;
+    if (saved && LANGUAGE_META[saved]) return saved;
+    const popular: SupportedLanguage[] = ['javascript', 'python', 'typescript', 'java', 'cpp', 'rust', 'go'];
+    return popular[Math.floor(Math.random() * popular.length)];
+  });
+
+  const [activeSnippetIndex, setActiveSnippetIndex] = useState(() => {
+    const savedLang = localStorage.getItem('vt_last_lang') as SupportedLanguage;
+    const lang = (savedLang && LANGUAGE_META[savedLang]) ? savedLang : 'javascript';
+    const pool = CODE_SNIPPETS.filter(s => s.language === lang);
+    return pool.length > 0 ? Math.floor(Math.random() * pool.length) : 0;
+  });
+
   const [difficultyFilter, setDifficultyFilter] = useState<'All' | 'Beginner' | 'Intermediate' | 'Advanced (LeetCode)'>('All');
   const [gameMode, setGameMode] = useState<GameMode>('sprint');
   const [isStrict, setIsStrict] = useState(true);
 
   // User Account & Session (Google Auth / Guest)
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
-    const saved = localStorage.getItem('vt_user_session');
-    return saved ? JSON.parse(saved) : null;
+    return storageService.getUser();
   });
 
   // Filter snippets by selected language and difficulty
@@ -133,23 +149,34 @@ export const App: React.FC = () => {
     setLastStats(finalStats);
     setShowSummary(true);
 
-    const earnedCoins = 60 + Math.floor(finalStats.wpm / 2) + (finalStats.accuracy >= 98 ? 40 : 0);
-    setCoins(prev => {
-      const next = prev + earnedCoins;
-      localStorage.setItem('vt_coins', next.toString());
-      return next;
-    });
+    const defaultUser: UserAccount = {
+      id: `guest_${Date.now()}`,
+      name: 'Guest Coder',
+      email: 'guest@codevelocity.dev',
+      avatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=Guest',
+      provider: 'guest',
+      title: 'Junior Developer',
+      level: 1,
+      xp: 0,
+      coins: 300,
+      bestWpm: 0,
+      totalCodeRuns: 0,
+      languagesPracticed: [selectedLanguage],
+    };
 
-    setTotalRaces(prev => {
-      const next = prev + 1;
-      localStorage.setItem('vt_total_races', next.toString());
-      return next;
-    });
+    const targetUser = currentUser || defaultUser;
+    const { updatedUser } = storageService.recordRace(
+      targetUser,
+      selectedLanguage,
+      activeSnippet.title,
+      finalStats.wpm,
+      finalStats.accuracy
+    );
 
-    if (finalStats.wpm > personalBestWpm) {
-      setPersonalBestWpm(finalStats.wpm);
-      localStorage.setItem('vt_pb_wpm', finalStats.wpm.toString());
-    }
+    setCurrentUser(updatedUser);
+    setCoins(updatedUser.coins);
+    setTotalRaces(updatedUser.totalCodeRuns);
+    setPersonalBestWpm(updatedUser.bestWpm);
 
     if (gameMode === 'boss_raid') {
       const dmg = finalStats.wpm * 30;
@@ -157,7 +184,7 @@ export const App: React.FC = () => {
       setBossHp(prev => Math.max(0, prev - dmg));
     }
 
-    // Persist race to Backend Database
+    // Persist race to Backend Database if connected
     if (currentUser) {
       fetch('/api/races/record', {
         method: 'POST',
@@ -180,7 +207,14 @@ export const App: React.FC = () => {
         colors: ['#38bdf8', '#3178c6', '#f7df1e', '#10b981'],
       });
     } catch (_) {}
-  }, [gameMode, personalBestWpm, currentUser, selectedLanguage, activeSnippet.title]);
+  }, [gameMode, currentUser, selectedLanguage, activeSnippet.title]);
+
+  // Synchronized Target Snippet (P2P multiplayer lobby overrides local code so all players race identically)
+  const effectiveSnippetCode = (roomData && roomData.targetText) ? roomData.targetText : activeSnippet.code;
+  const effectiveSnippetTitle = (roomData && roomData.snippetTitle) ? roomData.snippetTitle : activeSnippet.title;
+  const effectiveFilename = (roomData && roomData.snippetTitle)
+    ? `${roomData.snippetTitle.toLowerCase().replace(/[^a-z0-9]/g, '_')}${LANGUAGE_META[selectedLanguage].ext}`
+    : activeSnippet.filename;
 
   // Typing Engine Hook
   const {
@@ -195,7 +229,7 @@ export const App: React.FC = () => {
     resetEngine,
     deployNitro,
   } = useTypingEngine({
-    targetText: activeSnippet.code,
+    targetText: effectiveSnippetCode,
     isStrict,
     onFinish: handleRaceFinish,
   });
@@ -258,21 +292,20 @@ export const App: React.FC = () => {
     };
   }, [resetEngine]);
 
-  // Throttled Multiplayer Progress Broadcast
+  // Throttled Multiplayer Progress Broadcast (Socket.io & P2P WebRTC)
   useEffect(() => {
-    if (roomData && socketRef.current && isStarted && !isFinished) {
-      const timer = setTimeout(() => {
-        socketRef.current?.emit('race:progress_update', {
+    if (roomData && isStarted && !isFinished) {
+      if (socketConnected && socketRef.current) {
+        socketRef.current.emit('race:progress_update', {
           roomId: roomData.id,
           progress: progressPercent,
           wpm: stats.wpm,
           accuracy: stats.accuracy,
         });
-      }, 100);
-
-      return () => clearTimeout(timer);
+      }
+      p2pEngine.sendTelemetry(progressPercent, stats.wpm, stats.accuracy);
     }
-  }, [roomData, isStarted, isFinished, progressPercent, stats.wpm, stats.accuracy]);
+  }, [roomData, isStarted, isFinished, progressPercent, stats.wpm, stats.accuracy, socketConnected]);
 
   // Calculate Caret Coordinates
   useEffect(() => {
@@ -309,6 +342,16 @@ export const App: React.FC = () => {
     }
   }, [roomData, isStarted, isFinished, ghostRacer]);
 
+  // Auto-join multiplayer room if ?room=XYZ in URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      setIsMultiplayerOpen(true);
+      handleJoinRoom(roomParam);
+    }
+  }, []);
+
   // Equalizer vs Standard Progress
   const displayProgress =
     gameMode === 'equalizer'
@@ -344,14 +387,36 @@ export const App: React.FC = () => {
           ...aiRacers,
         ];
 
-  // Start Next Snippet
+  // Start Next Snippet (Dynamic & Random across the current language library)
   const startNextRace = (newIndex?: number) => {
     setShowSummary(false);
-    const nextIdx = newIndex !== undefined ? newIndex : (activeSnippetIndex + 1) % languageSnippets.length;
+    let nextIdx: number;
+    if (newIndex !== undefined) {
+      nextIdx = newIndex;
+    } else {
+      const currentId = activeSnippet.id;
+      const { index } = getRandomSnippet(selectedLanguage, currentId, difficultyFilter);
+      nextIdx = index;
+      if (nextIdx === activeSnippetIndex && languageSnippets.length > 1) {
+        nextIdx = (activeSnippetIndex + 1) % languageSnippets.length;
+      }
+    }
     setActiveSnippetIndex(nextIdx);
     resetEngine();
     setAiRacers(prev => prev.map(bot => ({ ...bot, progress: 0 })));
     if (ghostRacer) setGhostRacer(g => (g ? { ...g, progress: 0 } : null));
+  };
+
+  // Immediate Shuffle / Next Snippet Action
+  const handleShuffleSnippet = () => {
+    const currentId = activeSnippet.id;
+    const { index } = getRandomSnippet(selectedLanguage, currentId, difficultyFilter);
+    let nextIdx = index;
+    if (nextIdx === activeSnippetIndex && languageSnippets.length > 1) {
+      nextIdx = (activeSnippetIndex + 1) % languageSnippets.length;
+    }
+    setActiveSnippetIndex(nextIdx);
+    resetEngine();
   };
 
   const handleStartProblemDrill = (troublesomeKeys: string[]) => {
@@ -391,41 +456,197 @@ export const App: React.FC = () => {
   };
 
   const handleCreateRoom = (mode: string) => {
-    socketRef.current?.emit('room:create', {
-      playerName: currentUser?.name || 'Lead Dev',
-      color: equippedSkin.color,
-      mode,
-    });
+    if (socketConnected && socketRef.current) {
+      socketRef.current.emit('room:create', {
+        playerName: currentUser?.name || 'Lead Dev',
+        color: equippedSkin.color,
+        mode,
+        language: selectedLanguage,
+        codeSnippet: activeSnippet.code,
+      });
+    } else {
+      // P2P WebRTC Zero-Latency Room with clean uppercase code
+      const newRoomCode = generateRoomCode();
+      p2pEngine.init(
+        {
+          id: currentUser?.id || `usr_${Date.now()}`,
+          name: currentUser?.name || 'Lead Dev',
+          color: equippedSkin.color,
+          skinId: equippedSkin.id,
+          progress: 0,
+          wpm: 0,
+          accuracy: 100,
+          isReady: true,
+          isHost: true,
+          finished: false,
+        },
+        (netState) => {
+          if (!netState) {
+            setRoomData(null);
+            setMultiplayerRacers([]);
+            return;
+          }
+          setRoomData({
+            id: netState.id,
+            hostId: netState.hostId,
+            status: netState.status,
+            targetText: netState.codeSnippet,
+            mode: netState.mode,
+            countdownSeconds: netState.countdownSeconds,
+            language: netState.language,
+            snippetTitle: netState.snippetTitle,
+            players: netState.players.map((p) => ({
+              id: p.id,
+              name: p.name,
+              color: p.color,
+              isReady: p.isReady,
+              isHost: p.isHost,
+            })),
+          });
+
+          const mapped: Racer[] = netState.players.map((p) => ({
+            id: p.id,
+            name: p.name,
+            progress: p.progress,
+            wpm: p.wpm,
+            color: p.color,
+            isUser: p.id === p2pEngine.getMyId(),
+          }));
+          setMultiplayerRacers(mapped);
+
+          if (netState.status === 'RACING') {
+            setIsMultiplayerOpen(false);
+            resetEngine();
+          }
+        },
+        undefined,
+        newRoomCode
+      ).then((peerId) => {
+        p2pEngine.createRoom(peerId, {
+          language: selectedLanguage,
+          title: activeSnippet.title,
+          code: activeSnippet.code,
+          mode,
+        });
+      });
+    }
   };
 
   const handleJoinRoom = (roomId: string) => {
-    socketRef.current?.emit('room:join', {
-      roomId,
-      playerName: currentUser?.name || 'Coder',
-      color: equippedSkin.color,
-    });
+    const cleanRoomId = roomId.trim().toUpperCase();
+    if (socketConnected && socketRef.current) {
+      socketRef.current.emit('room:join', {
+        roomId: cleanRoomId,
+        playerName: currentUser?.name || 'Coder',
+        color: equippedSkin.color,
+      });
+    } else {
+      // P2P WebRTC Room Join
+      p2pEngine.init(
+        {
+          id: currentUser?.id || `usr_${Date.now()}`,
+          name: currentUser?.name || 'Guest Coder',
+          color: equippedSkin.color,
+          skinId: equippedSkin.id,
+          progress: 0,
+          wpm: 0,
+          accuracy: 100,
+          isReady: true,
+          isHost: false,
+          finished: false,
+        },
+        (netState) => {
+          if (!netState) {
+            setRoomData(null);
+            setMultiplayerRacers([]);
+            return;
+          }
+          setRoomData({
+            id: netState.id,
+            hostId: netState.hostId,
+            status: netState.status,
+            targetText: netState.codeSnippet,
+            mode: netState.mode,
+            countdownSeconds: netState.countdownSeconds,
+            language: netState.language,
+            snippetTitle: netState.snippetTitle,
+            players: netState.players.map((p) => ({
+              id: p.id,
+              name: p.name,
+              color: p.color,
+              isReady: p.isReady,
+              isHost: p.isHost,
+            })),
+          });
+
+          if (netState.language && (Object.keys(LANGUAGE_META) as string[]).includes(netState.language)) {
+            setSelectedLanguage(netState.language as SupportedLanguage);
+          }
+
+          const mapped: Racer[] = netState.players.map((p) => ({
+            id: p.id,
+            name: p.name,
+            progress: p.progress,
+            wpm: p.wpm,
+            color: p.color,
+            isUser: p.id === p2pEngine.getMyId(),
+          }));
+          setMultiplayerRacers(mapped);
+
+          if (netState.status === 'RACING') {
+            setIsMultiplayerOpen(false);
+            resetEngine();
+          }
+        }
+      ).then(() => {
+        p2pEngine.joinRoom(cleanRoomId, {
+          id: currentUser?.id || `usr_${Date.now()}`,
+          name: currentUser?.name || 'Guest Coder',
+          color: equippedSkin.color,
+          skinId: equippedSkin.id,
+          progress: 0,
+          wpm: 0,
+          accuracy: 100,
+          isReady: true,
+          isHost: false,
+          finished: false,
+        });
+      });
+    }
+  };
+
+  const handleLeaveRoom = () => {
+    p2pEngine.leaveRoom();
+    setRoomData(null);
+    setMultiplayerRacers([]);
+    setIsMultiplayerOpen(false);
+    resetEngine();
   };
 
   const handleToggleReady = () => {
-    if (roomData) {
-      socketRef.current?.emit('player:toggle_ready', { roomId: roomData.id });
+    if (socketConnected && socketRef.current && roomData) {
+      socketRef.current.emit('player:toggle_ready', { roomId: roomData.id });
+    } else {
+      p2pEngine.toggleReady();
     }
   };
 
   const handleStartMultiplayerRace = () => {
-    if (roomData) {
-      socketRef.current?.emit('race:start_request', { roomId: roomData.id });
+    if (socketConnected && socketRef.current && roomData) {
+      socketRef.current.emit('race:start_request', { roomId: roomData.id });
+    } else {
+      p2pEngine.startCountdown();
     }
   };
 
   const handleLogin = (user: UserAccount) => {
     setCurrentUser(user);
-    localStorage.setItem('vt_user_session', JSON.stringify(user));
+    storageService.saveUser(user);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    localStorage.removeItem('vt_user_session');
+    storageService.logoutUser();
   };
 
   const handleChallengeGhost = (wpm: number, name: string) => {
@@ -434,7 +655,7 @@ export const App: React.FC = () => {
   };
 
   const currentMeta = LANGUAGE_META[selectedLanguage];
-  const codeLines = activeSnippet.code.split('\n');
+  const codeLines = effectiveSnippetCode.split('\n');
 
   // Calculate active line index based on currentIndex
   let runningCharCount = 0;
@@ -528,17 +749,29 @@ export const App: React.FC = () => {
             </button>
 
             {/* Multiplayer Room Pill */}
-            <button
-              onClick={() => setIsMultiplayerOpen(true)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-xs transition-all hover:scale-105 cursor-pointer ${
-                roomData
-                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                  : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20'
-              }`}
-            >
-              <Radio className={`w-3.5 h-3.5 ${socketConnected ? 'text-emerald-400' : 'text-slate-500'}`} />
-              {roomData ? `Room: ${roomData.id}` : 'Multiplayer'}
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setIsMultiplayerOpen(true)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-xs transition-all hover:scale-105 cursor-pointer ${
+                  roomData
+                    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                    : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20'
+                }`}
+              >
+                <Radio className={`w-3.5 h-3.5 ${roomData ? 'text-emerald-400' : 'text-slate-500'}`} />
+                {roomData ? `Room: ${roomData.id}` : 'Multiplayer'}
+              </button>
+
+              {roomData && (
+                <button
+                  onClick={handleLeaveRoom}
+                  title="Leave Lobby"
+                  className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition-all cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
             {/* Google Sign-In or User Profile Badge */}
             {currentUser ? (
@@ -594,7 +827,10 @@ export const App: React.FC = () => {
                   key={lang}
                   onClick={() => {
                     setSelectedLanguage(lang);
-                    setActiveSnippetIndex(0);
+                    localStorage.setItem('vt_last_lang', lang);
+                    const langPool = CODE_SNIPPETS.filter(s => s.language === lang);
+                    const randIdx = langPool.length > 0 ? Math.floor(Math.random() * langPool.length) : 0;
+                    setActiveSnippetIndex(randIdx);
                     resetEngine();
                   }}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
@@ -635,7 +871,7 @@ export const App: React.FC = () => {
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
               {roomData
                 ? `Live Code Duel (${roomData.players.length} Devs Connected)`
-                : `Active Snippet: ${activeSnippet.filename} (${currentMeta.name})`}
+                : `Active Snippet: ${effectiveFilename} (${currentMeta.name})`}
             </div>
             <span>Personal Best: <strong className="text-sky-400">{personalBestWpm} WPM</strong></span>
           </div>
@@ -646,6 +882,14 @@ export const App: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800 text-xs">
           <div className="flex items-center gap-2 overflow-x-auto">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Snippets:</span>
+            <button
+              onClick={handleShuffleSnippet}
+              title="Shuffle / Randomize snippet"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 font-mono text-xs font-bold transition-all shrink-0 cursor-pointer shadow-sm"
+            >
+              <Shuffle className="w-3 h-3" />
+              <span>Shuffle</span>
+            </button>
             {languageSnippets.map((s, idx) => (
               <button
                 key={s.id}
@@ -683,11 +927,20 @@ export const App: React.FC = () => {
 
               <div className="ml-4 flex items-center gap-2 px-3 py-1 rounded-t-lg bg-slate-900 border-t border-x border-slate-700/60 text-xs font-mono text-slate-200">
                 <span>{currentMeta.icon}</span>
-                <span>{activeSnippet.filename}</span>
+                <span>{effectiveFilename}</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-4 text-xs text-slate-400">
+            <div className="flex items-center gap-3 text-xs text-slate-400">
+              <button
+                onClick={handleShuffleSnippet}
+                title="Next Random Code Snippet"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 font-mono text-xs font-bold transition-all hover:scale-105 cursor-pointer shadow-sm"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+                <span>Next Code</span>
+              </button>
+
               <label className="flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -919,16 +1172,21 @@ export const App: React.FC = () => {
 
             <div className="flex gap-3 font-sans">
               <button
-                onClick={() => resetEngine()}
-                className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors cursor-pointer"
+                onClick={() => {
+                  setShowSummary(false);
+                  resetEngine();
+                }}
+                className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
               >
-                Retry Code
+                <RotateCcw className="w-4 h-4" />
+                Retry Same Code
               </button>
               <button
                 onClick={() => startNextRace()}
                 className="flex-1 py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-slate-950 font-bold text-xs shadow-lg shadow-sky-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
-                Next Snippet <ChevronRight className="w-4 h-4" />
+                <Shuffle className="w-4 h-4" />
+                Next Random Code <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -968,7 +1226,8 @@ export const App: React.FC = () => {
         onJoinRoom={handleJoinRoom}
         onToggleReady={handleToggleReady}
         onStartRace={handleStartMultiplayerRace}
-        currentUserId={socketRef.current?.id || ''}
+        onLeaveRoom={handleLeaveRoom}
+        currentUserId={p2pEngine.getMyId() || socketRef.current?.id || ''}
       />
 
       <GarageModal

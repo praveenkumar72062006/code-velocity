@@ -1,17 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Trophy, Swords, Ghost, Medal, Play, RefreshCw, Flame } from 'lucide-react';
+import { X, Trophy, Swords, Ghost, Medal, Play, RefreshCw, Flame, UserCheck } from 'lucide-react';
 import { SupportedLanguage, LANGUAGE_META } from '../data/codeSnippets';
-
-interface LeaderboardEntry {
-  id: string;
-  userId: string;
-  userName: string;
-  language: string;
-  snippetTitle: string;
-  wpm: number;
-  accuracy: number;
-  timestamp: string;
-}
+import { storageService, LeaderboardRecord } from '../services/storageService';
 
 interface Match {
   id: string;
@@ -48,37 +38,39 @@ export const LeaderboardTournamentModal: React.FC<LeaderboardTournamentModalProp
   onChallengeGhost,
 }) => {
   const [activeTab, setActiveTab] = useState<'leaderboard' | 'tournament' | 'ghosts'>('leaderboard');
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRecord[]>([]);
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [filterLang, setFilterLang] = useState<string>(selectedLanguage);
 
   useEffect(() => {
     if (isOpen) {
-      fetchLeaderboard();
-      fetchTournament();
+      setFilterLang(selectedLanguage);
+      loadLeaderboard(selectedLanguage);
+      loadTournament();
     }
   }, [isOpen, selectedLanguage]);
 
-  const fetchLeaderboard = async () => {
+  const loadLeaderboard = async (lang: string) => {
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/leaderboard?language=${selectedLanguage}`);
+      // 1. Try server if available
+      const res = await fetch(`/api/leaderboard?language=${lang}`);
       const data = await res.json();
-      if (data.leaderboard) setLeaderboard(data.leaderboard);
-    } catch (_) {
-      // Fallback data
-      setLeaderboard([
-        { id: '1', userId: 'u1', userName: 'Alex Rivera', language: 'rust', snippetTitle: 'Concurrency Worker', wpm: 124, accuracy: 99.2, timestamp: 'Today' },
-        { id: '2', userId: 'u2', userName: 'Sarah Chen', language: 'python', snippetTitle: 'Two Sum Algorithm', wpm: 108, accuracy: 98.6, timestamp: 'Today' },
-        { id: '3', userId: 'u3', userName: 'Marcus Vance', language: 'cpp', snippetTitle: 'Safe Queue', wpm: 101, accuracy: 97.4, timestamp: 'Yesterday' },
-        { id: '4', userId: 'u4', userName: 'Elena Rostova', language: 'typescript', snippetTitle: 'React Custom Hook', wpm: 94, accuracy: 99.0, timestamp: '2 days ago' },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
+      if (data.leaderboard && data.leaderboard.length > 0) {
+        setLeaderboard(data.leaderboard);
+        setIsLoading(false);
+        return;
+      }
+    } catch (_) {}
+
+    // 2. Load from storageService with real live updates
+    const localRecords = storageService.getLeaderboard(lang);
+    setLeaderboard(localRecords);
+    setIsLoading(false);
   };
 
-  const fetchTournament = async () => {
+  const loadTournament = async () => {
     try {
       const res = await fetch('/api/tournaments/generate', {
         method: 'POST',
@@ -86,8 +78,40 @@ export const LeaderboardTournamentModal: React.FC<LeaderboardTournamentModalProp
         body: JSON.stringify({ tournamentName: 'Weekly Cohort Code Duel Cup' }),
       });
       const data = await res.json();
-      if (data.tournament) setTournament(data.tournament);
+      if (data.tournament) {
+        setTournament(data.tournament);
+        return;
+      }
     } catch (_) {}
+
+    // Local Tournament Generation
+    const records = storageService.getLeaderboard('all');
+    const p1 = records[0]?.userName || 'Praveen Kumar';
+    const p2 = records[1]?.userName || 'Alex Rivera';
+    const p3 = records[2]?.userName || 'Sarah Chen';
+    const p4 = records[3]?.userName || 'Marcus Vance';
+
+    setTournament({
+      id: `tourn_${Date.now()}`,
+      name: 'Global Code Velocity Cup',
+      rounds: [
+        {
+          roundNumber: 1,
+          title: 'Semifinals',
+          matches: [
+            { id: 'm1', p1, p2, score1: 118, score2: 104, winner: p1 },
+            { id: 'm2', p1: p3, p2: p4, score1: 99, score2: 92, winner: p3 },
+          ],
+        },
+        {
+          roundNumber: 2,
+          title: 'Grand Finals',
+          matches: [
+            { id: 'm3', p1, p2: p3, score1: 124, score2: 110, winner: p1 },
+          ],
+        },
+      ],
+    });
   };
 
   if (!isOpen) return null;
@@ -98,155 +122,230 @@ export const LeaderboardTournamentModal: React.FC<LeaderboardTournamentModalProp
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="glass-panel w-full max-w-3xl rounded-2xl border border-slate-700 p-6 relative shadow-2xl text-slate-100 max-h-[90vh] overflow-y-auto font-sans">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-5">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-400 text-slate-950 shadow-lg shadow-amber-500/20">
-              <Trophy className="w-5 h-5 fill-current" />
+            <div className="p-2.5 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-600 text-slate-950 shadow-lg shadow-amber-500/20">
+              <Trophy className="w-5 h-5 font-bold" />
             </div>
             <div>
-              <h2 className="text-xl font-black font-mono tracking-wide">CODE ARENA ESPORTS</h2>
-              <p className="text-xs text-slate-400">Leaderboards, Knockout Brackets & Asynchronous Ghosts</p>
+              <h2 className="text-xl font-black font-mono tracking-wide">ESPORTS LEADERBOARD & ARENA</h2>
+              <p className="text-xs text-slate-400">Real-time global rankings, dynamic brackets & ghost time-trials</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex items-center gap-2 mb-6 bg-slate-900/80 p-1.5 rounded-xl border border-slate-800 text-xs font-bold">
-          <button
-            onClick={() => setActiveTab('leaderboard')}
-            className={`flex-1 py-2 rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              activeTab === 'leaderboard' ? 'bg-amber-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Medal className="w-4 h-4" />
-            {currentMeta.name} Rankings
-          </button>
+        {/* Tab Controls */}
+        <div className="flex items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-2 bg-slate-900 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setActiveTab('leaderboard')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold font-mono transition-all flex items-center gap-2 cursor-pointer ${
+                activeTab === 'leaderboard'
+                  ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Trophy className="w-3.5 h-3.5" />
+              Rankings
+            </button>
+            <button
+              onClick={() => setActiveTab('tournament')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold font-mono transition-all flex items-center gap-2 cursor-pointer ${
+                activeTab === 'tournament'
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Swords className="w-3.5 h-3.5" />
+              Tournament Bracket
+            </button>
+            <button
+              onClick={() => setActiveTab('ghosts')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold font-mono transition-all flex items-center gap-2 cursor-pointer ${
+                activeTab === 'ghosts'
+                  ? 'bg-purple-500 text-white shadow-md shadow-purple-500/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Ghost className="w-3.5 h-3.5" />
+              Ghost Duels
+            </button>
+          </div>
 
-          <button
-            onClick={() => setActiveTab('tournament')}
-            className={`flex-1 py-2 rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              activeTab === 'tournament' ? 'bg-sky-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Swords className="w-4 h-4" />
-            Knockout Tournament
-          </button>
-
-          <button
-            onClick={() => setActiveTab('ghosts')}
-            className={`flex-1 py-2 rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              activeTab === 'ghosts' ? 'bg-purple-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Ghost className="w-4 h-4" />
-            Ghost Duels
-          </button>
-        </div>
-
-        {/* TAB 1: LEADERBOARD */}
-        {activeTab === 'leaderboard' && (
-          <div>
-            <div className="flex items-center justify-between mb-3 text-xs text-slate-400">
-              <span className="font-bold uppercase tracking-wider">Top Typists for {currentMeta.name}</span>
-              <button
-                onClick={fetchLeaderboard}
-                className="flex items-center gap-1 hover:text-slate-200 transition-colors"
+          {/* Language Selector for Leaderboard */}
+          {activeTab === 'leaderboard' && (
+            <div className="flex items-center gap-2">
+              <select
+                value={filterLang}
+                onChange={(e) => {
+                  setFilterLang(e.target.value);
+                  loadLeaderboard(e.target.value);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-sky-400 font-mono focus:outline-none cursor-pointer"
               >
-                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                <option value="all">🌐 All Languages</option>
+                <option value="python">🐍 Python</option>
+                <option value="javascript">⚡ JavaScript</option>
+                <option value="typescript">🔷 TypeScript</option>
+                <option value="java">☕ Java</option>
+                <option value="cpp">⚙️ C++</option>
+                <option value="rust">🦀 Rust</option>
+                <option value="go">🐹 Go</option>
+                <option value="sql">🗄️ SQL</option>
+                <option value="html">🌐 HTML/CSS</option>
+              </select>
+              <button
+                onClick={() => loadLeaderboard(filterLang)}
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                title="Refresh rankings"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
             </div>
+          )}
+        </div>
 
-            <div className="flex flex-col gap-2">
-              {leaderboard.map((entry, idx) => (
-                <div
-                  key={entry.id || idx}
-                  className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between font-mono"
-                >
-                  <div className="flex items-center gap-3">
+        {/* Tab 1: Leaderboard Table */}
+        {activeTab === 'leaderboard' && (
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-12 px-4 py-2 text-[10px] font-mono text-slate-400 uppercase tracking-wider bg-slate-900/60 rounded-lg border border-slate-800/80">
+              <span className="col-span-1">Rank</span>
+              <span className="col-span-4">Developer</span>
+              <span className="col-span-3">Language & Snippet</span>
+              <span className="col-span-2 text-right">Speed (WPM)</span>
+              <span className="col-span-2 text-right">Action</span>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              {leaderboard.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-400">
+                  No records yet for this language. Complete a race to claim Rank #1!
+                </div>
+              ) : (
+                leaderboard.map((item, idx) => {
+                  const isTop3 = idx < 3;
+                  return (
                     <div
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
-                        idx === 0
-                          ? 'bg-amber-500 text-slate-950'
-                          : idx === 1
-                          ? 'bg-slate-300 text-slate-950'
-                          : idx === 2
-                          ? 'bg-amber-700 text-white'
-                          : 'bg-slate-800 text-slate-400'
+                      key={item.id || idx}
+                      className={`grid grid-cols-12 items-center px-4 py-3 rounded-xl border transition-all ${
+                        item.isMe
+                          ? 'bg-sky-500/10 border-sky-500/40 text-sky-200'
+                          : isTop3
+                          ? 'bg-slate-900/90 border-slate-700 hover:border-amber-500/50'
+                          : 'bg-slate-900/40 border-slate-800 hover:bg-slate-900'
                       }`}
                     >
-                      #{idx + 1}
-                    </div>
-                    <div>
-                      <div className="font-bold text-sm text-slate-100">{entry.userName}</div>
-                      <div className="text-[10px] text-slate-400 font-sans">{entry.snippetTitle}</div>
-                    </div>
-                  </div>
+                      {/* Rank */}
+                      <div className="col-span-1 flex items-center gap-1 font-mono font-black text-sm">
+                        {idx === 0 && <Medal className="w-4 h-4 text-amber-400" />}
+                        {idx === 1 && <Medal className="w-4 h-4 text-slate-300" />}
+                        {idx === 2 && <Medal className="w-4 h-4 text-amber-600" />}
+                        {idx > 2 && <span className="text-slate-500">#{idx + 1}</span>}
+                      </div>
 
-                  <div className="flex items-center gap-6">
-                    <div className="text-right">
-                      <div className="text-base font-black text-sky-400">{entry.wpm} WPM</div>
-                      <div className="text-[10px] text-emerald-400">{entry.accuracy}% Acc</div>
-                    </div>
+                      {/* Developer */}
+                      <div className="col-span-4 flex items-center gap-2">
+                        <img
+                          src={item.avatar || `https://api.dicebear.com/7.x/bottts/svg?seed=${item.userName}`}
+                          alt={item.userName}
+                          className="w-7 h-7 rounded-lg border border-slate-700 bg-slate-950"
+                        />
+                        <div className="truncate">
+                          <div className="font-bold text-xs flex items-center gap-1.5">
+                            <span className="truncate">{item.userName}</span>
+                            {item.isMe && (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-sky-500 text-slate-950">
+                                YOU
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 font-mono">{item.timestamp}</span>
+                        </div>
+                      </div>
 
-                    <button
-                      onClick={() => {
-                        onChallengeGhost?.(entry.wpm, entry.userName);
-                        onClose();
-                      }}
-                      title="Race against this user's ghost run"
-                      className="px-3 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 text-xs font-semibold border border-purple-500/40 flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Ghost className="w-3.5 h-3.5" /> Race Ghost
-                    </button>
-                  </div>
-                </div>
-              ))}
+                      {/* Language & Snippet */}
+                      <div className="col-span-3 text-xs truncate">
+                        <span className="font-mono text-sky-400 text-[11px] uppercase mr-1.5">[{item.language}]</span>
+                        <span className="text-slate-300 text-[11px]">{item.snippetTitle}</span>
+                      </div>
+
+                      {/* WPM & Accuracy */}
+                      <div className="col-span-2 text-right font-mono">
+                        <div className="font-black text-sm text-amber-400">{item.wpm} WPM</div>
+                        <div className="text-[10px] text-emerald-400">{item.accuracy}% ACC</div>
+                      </div>
+
+                      {/* Challenge Button */}
+                      <div className="col-span-2 flex justify-end">
+                        <button
+                          onClick={() => {
+                            if (onChallengeGhost) onChallengeGhost(item.wpm, item.userName);
+                            onClose();
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Ghost className="w-3 h-3" />
+                          Duel Ghost
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         )}
 
-        {/* TAB 2: TOURNAMENT BRACKET */}
-        {activeTab === 'tournament' && tournament && (
-          <div>
-            <div className="mb-4 text-center">
-              <span className="text-xs uppercase font-bold text-sky-400 tracking-wider">KNOCKOUT BRACKET</span>
-              <h3 className="text-lg font-black text-slate-100 font-mono">{tournament.name}</h3>
+        {/* Tab 2: Tournament Bracket */}
+        {activeTab === 'tournament' && (
+          <div className="flex flex-col gap-6">
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-amber-400 font-mono">
+                  {tournament?.name || 'Code Duel Bracket'}
+                </h3>
+                <p className="text-xs text-slate-400">Automated 8-Player Knockout Championship</p>
+              </div>
+              <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                ACTIVE COHORT
+              </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 font-mono">
-              {tournament.rounds.map(round => (
+            {/* Bracket Visualization */}
+            <div className="grid grid-cols-2 gap-4">
+              {tournament?.rounds.map((round) => (
                 <div key={round.roundNumber} className="flex flex-col gap-3">
-                  <div className="text-xs uppercase font-bold text-slate-400 border-b border-slate-800 pb-1 text-center">
+                  <div className="text-xs font-bold font-mono text-slate-400 uppercase border-b border-slate-800 pb-1">
                     {round.title}
                   </div>
-
-                  <div className="flex flex-col justify-around gap-3 h-full">
-                    {round.matches.map(m => (
+                  <div className="flex flex-col gap-3">
+                    {round.matches.map((m) => (
                       <div
                         key={m.id}
-                        className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1.5 text-xs shadow-sm"
+                        className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col gap-1.5 text-xs font-mono"
                       >
                         <div
                           className={`flex items-center justify-between p-1.5 rounded ${
-                            m.winner === m.p1 ? 'bg-sky-500/20 text-sky-300 font-bold' : 'text-slate-400'
+                            m.winner === m.p1 ? 'bg-emerald-500/10 text-emerald-300 font-bold' : 'text-slate-400'
                           }`}
                         >
-                          <span>{m.p1}</span>
-                          <span className="font-mono">{m.score1} WPM</span>
+                          <span className="truncate">{m.p1}</span>
+                          <span className="text-amber-400 font-bold">{m.score1} WPM</span>
                         </div>
+                        <div className="h-px bg-slate-800" />
                         <div
                           className={`flex items-center justify-between p-1.5 rounded ${
-                            m.winner === m.p2 ? 'bg-sky-500/20 text-sky-300 font-bold' : 'text-slate-400'
+                            m.winner === m.p2 ? 'bg-emerald-500/10 text-emerald-300 font-bold' : 'text-slate-400'
                           }`}
                         >
-                          <span>{m.p2}</span>
-                          <span className="font-mono">{m.score2} WPM</span>
+                          <span className="truncate">{m.p2}</span>
+                          <span className="text-amber-400 font-bold">{m.score2} WPM</span>
                         </div>
                       </div>
                     ))}
@@ -257,53 +356,41 @@ export const LeaderboardTournamentModal: React.FC<LeaderboardTournamentModalProp
           </div>
         )}
 
-        {/* TAB 3: ASYNCHRONOUS GHOSTS */}
+        {/* Tab 3: Ghost Duels */}
         {activeTab === 'ghosts' && (
           <div className="flex flex-col gap-4">
-            <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-between">
-              <div>
-                <h4 className="font-bold text-sm text-purple-300 flex items-center gap-1.5">
-                  <Ghost className="w-4 h-4" />
-                  Asynchronous Peer Challenges
-                </h4>
-                <p className="text-xs text-slate-400 font-sans mt-0.5">
-                  Not everyone is online at the same time. Race your friends' recorded keystroke telemetry!
-                </p>
-              </div>
+            <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-200 text-xs">
+              <strong>Asynchronous Ghost Mode:</strong> Race against saved runs from top community developers.
+              Their exact typing velocity timeline is replayed live on your track!
             </div>
 
-            <div className="flex flex-col gap-2">
-              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between font-mono">
-                <div>
-                  <div className="font-bold text-sm text-slate-100">Alex Rivera (Ghost)</div>
-                  <div className="text-[10px] text-slate-400">Two Sum Algorithm • 124 WPM</div>
-                </div>
-                <button
-                  onClick={() => {
-                    onChallengeGhost?.(124, 'Alex (Ghost)');
-                    onClose();
-                  }}
-                  className="px-4 py-2 rounded-xl bg-purple-500 hover:bg-purple-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+            <div className="grid grid-cols-2 gap-3">
+              {leaderboard.slice(0, 6).map((item, idx) => (
+                <div
+                  key={idx}
+                  className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between"
                 >
-                  <Play className="w-3.5 h-3.5 fill-current" /> Race Ghost
-                </button>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between font-mono">
-                <div>
-                  <div className="font-bold text-sm text-slate-100">Sarah Chen (Ghost)</div>
-                  <div className="text-[10px] text-slate-400">Thread-Safe Singleton • 108 WPM</div>
+                  <div>
+                    <div className="font-bold text-xs text-slate-100 flex items-center gap-1.5">
+                      <Ghost className="w-3.5 h-3.5 text-purple-400" />
+                      {item.userName}
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      {item.language.toUpperCase()} • {item.wpm} WPM
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (onChallengeGhost) onChallengeGhost(item.wpm, item.userName);
+                      onClose();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-md shadow-purple-600/20"
+                  >
+                    <Play className="w-3 h-3 fill-current" />
+                    Race Ghost
+                  </button>
                 </div>
-                <button
-                  onClick={() => {
-                    onChallengeGhost?.(108, 'Sarah (Ghost)');
-                    onClose();
-                  }}
-                  className="px-4 py-2 rounded-xl bg-purple-500 hover:bg-purple-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" /> Race Ghost
-                </button>
-              </div>
+              ))}
             </div>
           </div>
         )}

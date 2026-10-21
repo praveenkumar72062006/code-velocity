@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Users, Play, Copy, Check, Radio } from 'lucide-react';
+import { X, Users, Play, Copy, Check, Radio, LogOut } from 'lucide-react';
 
 export interface RoomPlayer {
   id: string;
@@ -17,6 +17,8 @@ export interface RoomData {
   mode: string;
   countdownSeconds: number;
   players: RoomPlayer[];
+  language?: string;
+  snippetTitle?: string;
 }
 
 interface MultiplayerModalProps {
@@ -29,6 +31,7 @@ interface MultiplayerModalProps {
   onJoinRoom: (roomId: string) => void;
   onToggleReady: () => void;
   onStartRace: () => void;
+  onLeaveRoom?: () => void;
   currentUserId: string;
 }
 
@@ -41,6 +44,7 @@ export const MultiplayerModal: React.FC<MultiplayerModalProps> = ({
   onJoinRoom,
   onToggleReady,
   onStartRace,
+  onLeaveRoom,
   currentUserId,
 }) => {
   const [joinCode, setJoinCode] = useState('');
@@ -194,6 +198,16 @@ export const MultiplayerModal: React.FC<MultiplayerModalProps> = ({
               </div>
             </div>
 
+            {/* Synchronized Code Snippet Info */}
+            {roomData.snippetTitle && (
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between text-xs">
+                <span className="text-slate-400">Target Code:</span>
+                <span className="font-mono font-bold text-sky-400">
+                  {roomData.snippetTitle} {roomData.language ? `(${roomData.language.toUpperCase()})` : ''}
+                </span>
+              </div>
+            )}
+
             {/* Countdown Banner if Active */}
             {roomData.status === 'COUNTDOWN' && (
               <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/40 text-center animate-pulse">
@@ -205,26 +219,38 @@ export const MultiplayerModal: React.FC<MultiplayerModalProps> = ({
             )}
 
             {/* Lobby Action Buttons */}
-            <div className="flex gap-3">
-              <button
-                onClick={onToggleReady}
-                className={`flex-1 py-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                  currentPlayer?.isReady
-                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/20'
-                }`}
-              >
-                {currentPlayer?.isReady ? 'Cancel Ready' : 'Ready Up'}
-              </button>
-
-              {isHost && (
+            <div className="flex flex-col gap-2.5">
+              <div className="flex gap-3">
                 <button
-                  onClick={onStartRace}
-                  disabled={roomData.status === 'COUNTDOWN'}
-                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-slate-950 font-bold text-xs shadow-lg shadow-sky-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  onClick={onToggleReady}
+                  className={`flex-1 py-3 rounded-xl font-bold text-xs transition-all cursor-pointer ${
+                    currentPlayer?.isReady
+                      ? 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/20'
+                  }`}
                 >
-                  <Play className="w-4 h-4 fill-current" />
-                  Start Race Now
+                  {currentPlayer?.isReady ? 'Cancel Ready' : 'Ready Up'}
+                </button>
+
+                {isHost && (
+                  <button
+                    onClick={onStartRace}
+                    disabled={roomData.status === 'COUNTDOWN'}
+                    className="flex-1 py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-slate-950 font-bold text-xs shadow-lg shadow-sky-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    Start Race Now
+                  </button>
+                )}
+              </div>
+
+              {onLeaveRoom && (
+                <button
+                  onClick={onLeaveRoom}
+                  className="w-full py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Leave Lobby
                 </button>
               )}
             </div>
