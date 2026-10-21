@@ -48,6 +48,7 @@ import { AdminDashboardModal } from './components/AdminDashboardModal';
 import { WS_SERVER_URL, getApiUrl } from './config';
 import { storageService } from './services/storageService';
 import { p2pEngine, generateRoomCode } from './services/multiplayerEngine';
+import { snippetService } from './services/snippetService';
 
 type GameMode = 'sprint' | 'equalizer' | 'boss_raid';
 
@@ -67,12 +68,26 @@ export const App: React.FC = () => {
     return popular[Math.floor(Math.random() * popular.length)];
   });
 
-  const [activeSnippetIndex, setActiveSnippetIndex] = useState(() => {
-    const savedLang = localStorage.getItem('vt_last_lang') as SupportedLanguage;
-    const lang = (savedLang && LANGUAGE_META[savedLang]) ? savedLang : 'javascript';
-    const pool = CODE_SNIPPETS.filter(s => s.language === lang);
-    return pool.length > 0 ? Math.floor(Math.random() * pool.length) : 0;
+  // Dynamic Snippet Batch (Infinite Backend Generator + Library)
+  const [snippetsList, setSnippetsList] = useState<CodeSnippet[]>(() => {
+    const initial = CODE_SNIPPETS.filter(s => s.language === selectedLanguage);
+    return initial.slice(0, 5);
   });
+  const [activeSnippet, setActiveSnippet] = useState<CodeSnippet>(() => {
+    const pool = CODE_SNIPPETS.filter(s => s.language === selectedLanguage);
+    return pool[Math.floor(Math.random() * pool.length)] || CODE_SNIPPETS[0];
+  });
+  const [isGeneratingSnippet, setIsGeneratingSnippet] = useState(false);
+
+  // Fetch dynamic initial batch on mount from Vercel backend
+  useEffect(() => {
+    snippetService.fetchFreshBatch(selectedLanguage, 5).then((batch) => {
+      if (batch && batch.length > 0) {
+        setSnippetsList(batch);
+        setActiveSnippet(batch[0]);
+      }
+    });
+  }, []);
 
   const [difficultyFilter, setDifficultyFilter] = useState<'All' | 'Beginner' | 'Intermediate' | 'Advanced (LeetCode)'>('All');
   const [gameMode, setGameMode] = useState<GameMode>('sprint');
@@ -83,12 +98,6 @@ export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     return storageService.getUser();
   });
-
-  // Filter snippets by selected language and difficulty
-  const languageSnippets = CODE_SNIPPETS.filter(
-    s => s.language === selectedLanguage && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
-  );
-  const activeSnippet: CodeSnippet = languageSnippets[activeSnippetIndex] || languageSnippets[0] || CODE_SNIPPETS[0];
 
   // User Profile & Economy (stored in localStorage)
   const [coins, setCoins] = useState(() => {
@@ -398,64 +407,89 @@ export const App: React.FC = () => {
           ...aiRacers,
         ];
 
-  // Start Next Snippet (Guaranteed different snippet in current language)
-  const startNextRace = (newIndex?: number) => {
+  // Start Next Snippet (Guaranteed brand new unique code challenge from backend)
+  const startNextRace = async () => {
     setShowSummary(false);
     if (!roomData || roomData.status === 'FINISHED') {
       setRoomData(null);
     }
-    let nextIdx: number;
-    if (newIndex !== undefined) {
-      nextIdx = newIndex;
-    } else {
-      const currentId = activeSnippet.id;
-      const langPool = CODE_SNIPPETS.filter(
-        s => s.language === selectedLanguage && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
-      );
-      const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
-      const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
-      nextIdx = langPool.findIndex(s => s.id === picked.id);
-    }
-    setActiveSnippetIndex(Math.max(0, nextIdx));
-    resetEngine();
+    await handleGenerateUniqueSnippet();
     setAiRacers(prev => prev.map(bot => ({ ...bot, progress: 0 })));
     if (ghostRacer) setGhostRacer(g => (g ? { ...g, progress: 0 } : null));
   };
 
-  // Immediate Shuffle / Refresh Snippet Action
-  const handleShuffleSnippet = () => {
+  // Generate an unseen unique snippet on demand from backend
+  const handleGenerateUniqueSnippet = async () => {
+    setIsGeneratingSnippet(true);
     if (!roomData || roomData.status === 'FINISHED') {
       setRoomData(null);
     }
-    const currentId = activeSnippet.id;
-    const langPool = CODE_SNIPPETS.filter(
-      s => s.language === selectedLanguage && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
-    );
-    const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
-    const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
-    const nextIdx = langPool.findIndex(s => s.id === picked.id);
-    setActiveSnippetIndex(Math.max(0, nextIdx));
+    setShowSummary(false);
+    try {
+      const unique = await snippetService.fetchUniqueSnippet(selectedLanguage);
+      setSnippetsList(prev => [unique, ...prev.filter(s => s.id !== unique.id).slice(0, 4)]);
+      setActiveSnippet(unique);
+    } catch (_) {
+      const fallback = snippetService.generateProceduralSnippet(selectedLanguage);
+      setSnippetsList(prev => [fallback, ...prev.slice(0, 4)]);
+      setActiveSnippet(fallback);
+    } finally {
+      setIsGeneratingSnippet(false);
+      resetEngine();
+    }
+  };
+
+  // Re-roll 5 fresh snippet options from backend
+  const handleRefreshBatch = async () => {
+    setIsGeneratingSnippet(true);
+    setShowSummary(false);
+    try {
+      const batch = await snippetService.fetchFreshBatch(selectedLanguage, 5);
+      setSnippetsList(batch);
+      setActiveSnippet(batch[0]);
+    } catch (_) {
+      const pool = CODE_SNIPPETS.filter(s => s.language === selectedLanguage);
+      setSnippetsList(pool.slice(0, 5));
+      setActiveSnippet(pool[0] || CODE_SNIPPETS[0]);
+    } finally {
+      setIsGeneratingSnippet(false);
+      resetEngine();
+    }
+  };
+
+  // Shuffle button alias
+  const handleShuffleSnippet = () => {
+    handleGenerateUniqueSnippet();
+  };
+
+  // User selects a specific pill
+  const handleSelectSnippetPill = (snippet: CodeSnippet) => {
+    setActiveSnippet(snippet);
     setShowSummary(false);
     resetEngine();
   };
 
-  // Language Selection: Guaranteed refresh to a new, different snippet every time
-  const handleSelectLanguage = (lang: SupportedLanguage) => {
+  // Language Selection: Guaranteed fetch of 5 fresh new snippets for that language
+  const handleSelectLanguage = async (lang: SupportedLanguage) => {
     setSelectedLanguage(lang);
     localStorage.setItem('vt_last_lang', lang);
     if (!roomData || roomData.status === 'FINISHED') {
       setRoomData(null);
     }
-    const langPool = CODE_SNIPPETS.filter(
-      s => s.language === lang && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
-    );
-    const currentId = activeSnippet.language === lang ? activeSnippet.id : undefined;
-    const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
-    const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
-    const newIdx = langPool.findIndex(s => s.id === picked.id);
-    setActiveSnippetIndex(Math.max(0, newIdx));
     setShowSummary(false);
-    resetEngine();
+    setIsGeneratingSnippet(true);
+    try {
+      const freshBatch = await snippetService.fetchFreshBatch(lang, 5);
+      setSnippetsList(freshBatch);
+      setActiveSnippet(freshBatch[0]);
+    } catch (_) {
+      const fallback = CODE_SNIPPETS.filter(s => s.language === lang);
+      setSnippetsList(fallback.slice(0, 5));
+      setActiveSnippet(fallback[0] || CODE_SNIPPETS[0]);
+    } finally {
+      setIsGeneratingSnippet(false);
+      resetEngine();
+    }
   };
 
   // Global Keyboard Shortcuts (Alt+N to refresh code, Enter/Space in Victory modal to advance)
@@ -464,7 +498,7 @@ export const App: React.FC = () => {
       // Alt+N or Ctrl+Shift+R triggers immediate new snippet
       if ((e.altKey && e.key.toLowerCase() === 'n') || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'r')) {
         e.preventDefault();
-        handleShuffleSnippet();
+        handleGenerateUniqueSnippet();
       }
       // When victory modal is open: Enter, Space or Tab advances to next snippet
       if (showSummary && (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab')) {
@@ -484,7 +518,7 @@ export const App: React.FC = () => {
     const heavySnippet = CODE_SNIPPETS.find(s => s.code.includes('{') && s.code.includes('=>'));
     if (heavySnippet) {
       setSelectedLanguage(heavySnippet.language);
-      setActiveSnippetIndex(0);
+      setActiveSnippet(heavySnippet);
       resetEngine();
     }
   };
@@ -928,34 +962,52 @@ export const App: React.FC = () => {
           <RaceTrack racers={allRacers} />
         </div>
 
-        {/* Snippet Selector Pills & Difficulty */}
+        {/* Snippet Selector Section: Live Backend Algorithmic Generator + Fresh Dynamic Pills */}
         <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800 text-xs">
-          <div className="flex items-center gap-2 overflow-x-auto">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Snippets:</span>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
+              <Code2 className="w-3.5 h-3.5 text-sky-400" /> Snippets:
+            </span>
+
+            {/* ✨ Generate 100% Unique Code from Backend */}
             <button
-              onClick={handleShuffleSnippet}
-              title="Shuffle / Randomize snippet"
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 font-mono text-xs font-bold transition-all shrink-0 cursor-pointer shadow-sm"
+              onClick={handleGenerateUniqueSnippet}
+              disabled={isGeneratingSnippet}
+              title="Generate a 100% brand new, unique algorithmic code challenge from backend"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-amber-500/20 via-sky-500/20 to-indigo-500/20 hover:from-amber-500/30 hover:to-indigo-500/30 text-sky-300 border border-sky-500/40 font-mono text-xs font-bold transition-all shrink-0 cursor-pointer shadow-sm hover:scale-105 active:scale-95 disabled:opacity-50"
             >
-              <Shuffle className="w-3 h-3" />
-              <span>Shuffle</span>
+              <Sparkles className={`w-3.5 h-3.5 text-amber-400 ${isGeneratingSnippet ? 'animate-spin' : 'animate-pulse'}`} />
+              <span>{isGeneratingSnippet ? 'Generating...' : '✨ Generate Unique Code'}</span>
             </button>
-            {languageSnippets.map((s, idx) => (
-              <button
-                key={s.id}
-                onClick={() => {
-                  setActiveSnippetIndex(idx);
-                  resetEngine();
-                }}
-                className={`px-3 py-1 rounded-lg font-mono text-xs transition-all shrink-0 cursor-pointer ${
-                  idx === activeSnippetIndex
-                    ? 'bg-sky-500 text-slate-950 font-bold shadow-md'
-                    : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
-                }`}
-              >
-                {s.title}
-              </button>
-            ))}
+
+            {/* 🔄 Re-roll Fresh Batch of 5 */}
+            <button
+              onClick={handleRefreshBatch}
+              disabled={isGeneratingSnippet}
+              title="Fetch 5 completely new snippet options from backend"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-mono text-xs font-semibold transition-all shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RotateCcw className={`w-3 h-3 ${isGeneratingSnippet ? 'animate-spin' : ''}`} />
+              <span>Fresh Batch</span>
+            </button>
+
+            {/* Dynamic Snippet Pills from Backend */}
+            {snippetsList.map((s) => {
+              const isCurrent = s.id === activeSnippet.id;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => handleSelectSnippetPill(s)}
+                  className={`px-3 py-1 rounded-lg font-mono text-xs transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                    isCurrent
+                      ? 'bg-sky-500 text-slate-950 font-bold shadow-md scale-105'
+                      : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                  }`}
+                >
+                  <span>{s.title}</span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="flex items-center gap-2">
