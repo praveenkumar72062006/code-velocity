@@ -81,6 +81,11 @@ export function useTypingEngine({
     }
   }, []);
 
+  // Automatically reset engine state whenever target text changes
+  useEffect(() => {
+    resetEngine();
+  }, [targetText, resetEngine]);
+
   // Timer & WPM calculation loop
   useEffect(() => {
     if (isStarted && !isFinished) {

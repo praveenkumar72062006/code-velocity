@@ -77,6 +77,7 @@ export const App: React.FC = () => {
   const [difficultyFilter, setDifficultyFilter] = useState<'All' | 'Beginner' | 'Intermediate' | 'Advanced (LeetCode)'>('All');
   const [gameMode, setGameMode] = useState<GameMode>('sprint');
   const [isStrict, setIsStrict] = useState(true);
+  const [autoAdvance, setAutoAdvance] = useState(() => localStorage.getItem('vt_auto_advance') === 'true');
 
   // User Account & Session (Google Auth / Guest)
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
@@ -207,12 +208,22 @@ export const App: React.FC = () => {
         colors: ['#38bdf8', '#3178c6', '#f7df1e', '#10b981'],
       });
     } catch (_) {}
-  }, [gameMode, currentUser, selectedLanguage, activeSnippet.title]);
 
-  // Synchronized Target Snippet (P2P multiplayer lobby overrides local code so all players race identically)
-  const effectiveSnippetCode = (roomData && roomData.targetText) ? roomData.targetText : activeSnippet.code;
-  const effectiveSnippetTitle = (roomData && roomData.snippetTitle) ? roomData.snippetTitle : activeSnippet.title;
-  const effectiveFilename = (roomData && roomData.snippetTitle)
+    // Auto-advance to next snippet if enabled
+    if (autoAdvance) {
+      setTimeout(() => {
+        startNextRace();
+      }, 1400);
+    }
+  }, [gameMode, currentUser, selectedLanguage, activeSnippet.title, autoAdvance]);
+
+  // Synchronized Target Snippet: ONLY override local code if currently inside an active multiplayer countdown or race
+  const isInActiveMultiplayer = Boolean(
+    roomData && (roomData.status === 'LOBBY' || roomData.status === 'COUNTDOWN' || roomData.status === 'RACING')
+  );
+  const effectiveSnippetCode = (isInActiveMultiplayer && roomData?.targetText) ? roomData.targetText : activeSnippet.code;
+  const effectiveSnippetTitle = (isInActiveMultiplayer && roomData?.snippetTitle) ? roomData.snippetTitle : activeSnippet.title;
+  const effectiveFilename = (isInActiveMultiplayer && roomData?.snippetTitle)
     ? `${roomData.snippetTitle.toLowerCase().replace(/[^a-z0-9]/g, '_')}${LANGUAGE_META[selectedLanguage].ext}`
     : activeSnippet.filename;
 
@@ -387,37 +398,83 @@ export const App: React.FC = () => {
           ...aiRacers,
         ];
 
-  // Start Next Snippet (Dynamic & Random across the current language library)
+  // Start Next Snippet (Guaranteed different snippet in current language)
   const startNextRace = (newIndex?: number) => {
     setShowSummary(false);
+    if (!roomData || roomData.status === 'FINISHED') {
+      setRoomData(null);
+    }
     let nextIdx: number;
     if (newIndex !== undefined) {
       nextIdx = newIndex;
     } else {
       const currentId = activeSnippet.id;
-      const { index } = getRandomSnippet(selectedLanguage, currentId, difficultyFilter);
-      nextIdx = index;
-      if (nextIdx === activeSnippetIndex && languageSnippets.length > 1) {
-        nextIdx = (activeSnippetIndex + 1) % languageSnippets.length;
-      }
+      const langPool = CODE_SNIPPETS.filter(
+        s => s.language === selectedLanguage && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
+      );
+      const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
+      const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
+      nextIdx = langPool.findIndex(s => s.id === picked.id);
     }
-    setActiveSnippetIndex(nextIdx);
+    setActiveSnippetIndex(Math.max(0, nextIdx));
     resetEngine();
     setAiRacers(prev => prev.map(bot => ({ ...bot, progress: 0 })));
     if (ghostRacer) setGhostRacer(g => (g ? { ...g, progress: 0 } : null));
   };
 
-  // Immediate Shuffle / Next Snippet Action
+  // Immediate Shuffle / Refresh Snippet Action
   const handleShuffleSnippet = () => {
-    const currentId = activeSnippet.id;
-    const { index } = getRandomSnippet(selectedLanguage, currentId, difficultyFilter);
-    let nextIdx = index;
-    if (nextIdx === activeSnippetIndex && languageSnippets.length > 1) {
-      nextIdx = (activeSnippetIndex + 1) % languageSnippets.length;
+    if (!roomData || roomData.status === 'FINISHED') {
+      setRoomData(null);
     }
-    setActiveSnippetIndex(nextIdx);
+    const currentId = activeSnippet.id;
+    const langPool = CODE_SNIPPETS.filter(
+      s => s.language === selectedLanguage && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
+    );
+    const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
+    const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
+    const nextIdx = langPool.findIndex(s => s.id === picked.id);
+    setActiveSnippetIndex(Math.max(0, nextIdx));
+    setShowSummary(false);
     resetEngine();
   };
+
+  // Language Selection: Guaranteed refresh to a new, different snippet every time
+  const handleSelectLanguage = (lang: SupportedLanguage) => {
+    setSelectedLanguage(lang);
+    localStorage.setItem('vt_last_lang', lang);
+    if (!roomData || roomData.status === 'FINISHED') {
+      setRoomData(null);
+    }
+    const langPool = CODE_SNIPPETS.filter(
+      s => s.language === lang && (difficultyFilter === 'All' || s.difficulty === difficultyFilter)
+    );
+    const currentId = activeSnippet.language === lang ? activeSnippet.id : undefined;
+    const candidates = langPool.length > 1 ? langPool.filter(s => s.id !== currentId) : langPool;
+    const picked = candidates[Math.floor(Math.random() * candidates.length)] || langPool[0];
+    const newIdx = langPool.findIndex(s => s.id === picked.id);
+    setActiveSnippetIndex(Math.max(0, newIdx));
+    setShowSummary(false);
+    resetEngine();
+  };
+
+  // Global Keyboard Shortcuts (Alt+N to refresh code, Enter/Space in Victory modal to advance)
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      // Alt+N or Ctrl+Shift+R triggers immediate new snippet
+      if ((e.altKey && e.key.toLowerCase() === 'n') || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'r')) {
+        e.preventDefault();
+        handleShuffleSnippet();
+      }
+      // When victory modal is open: Enter, Space or Tab advances to next snippet
+      if (showSummary && (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab')) {
+        e.preventDefault();
+        startNextRace();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts);
+  }, [showSummary, activeSnippet.id, selectedLanguage, difficultyFilter]);
 
   const handleStartProblemDrill = (troublesomeKeys: string[]) => {
     resetEngine();
@@ -825,14 +882,7 @@ export const App: React.FC = () => {
               return (
                 <button
                   key={lang}
-                  onClick={() => {
-                    setSelectedLanguage(lang);
-                    localStorage.setItem('vt_last_lang', lang);
-                    const langPool = CODE_SNIPPETS.filter(s => s.language === lang);
-                    const randIdx = langPool.length > 0 ? Math.floor(Math.random() * langPool.length) : 0;
-                    setActiveSnippetIndex(randIdx);
-                    resetEngine();
-                  }}
+                  onClick={() => handleSelectLanguage(lang)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
                     isSelected
                       ? 'bg-sky-500/20 text-sky-300 border border-sky-500/60 shadow-lg shadow-sky-500/10 scale-105'
@@ -934,12 +984,25 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <button
                 onClick={handleShuffleSnippet}
-                title="Next Random Code Snippet"
+                title="Next Random Code Snippet (Alt+N)"
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 font-mono text-xs font-bold transition-all hover:scale-105 cursor-pointer shadow-sm"
               >
                 <Shuffle className="w-3.5 h-3.5" />
                 <span>Next Code</span>
               </button>
+
+              <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Automatically advance to new snippet 1.4s after completing current code">
+                <input
+                  type="checkbox"
+                  checked={autoAdvance}
+                  onChange={e => {
+                    setAutoAdvance(e.target.checked);
+                    localStorage.setItem('vt_auto_advance', e.target.checked.toString());
+                  }}
+                  className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0"
+                />
+                <span className={autoAdvance ? 'text-emerald-400 font-bold' : ''}>Auto-Next</span>
+              </label>
 
               <label className="flex items-center gap-1.5 cursor-pointer select-none">
                 <input
@@ -1186,7 +1249,7 @@ export const App: React.FC = () => {
                 className="flex-1 py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-slate-950 font-bold text-xs shadow-lg shadow-sky-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Shuffle className="w-4 h-4" />
-                Next Random Code <ChevronRight className="w-4 h-4" />
+                Next New Code (⏎ Enter) <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           </div>
