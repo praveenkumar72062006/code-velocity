@@ -138,6 +138,7 @@ export const App: React.FC = () => {
   const [socketConnected, setSocketConnected] = useState(false);
   const [roomData, setRoomData] = useState<RoomData | null>(null);
   const [multiplayerRacers, setMultiplayerRacers] = useState<Racer[]>([]);
+  const lastMultiplayerStatusRef = useRef<string | null>(null);
 
   // AI Bots State
   const [aiRacers, setAiRacers] = useState<{ id: string; name: string; progress: number; wpm: number; color: string }[]>([
@@ -209,6 +210,19 @@ export const App: React.FC = () => {
       }).catch(() => {});
     }
 
+    // Sync 100% completion over multiplayer
+    if (roomData) {
+      if (socketConnected && socketRef.current) {
+        socketRef.current.emit('race:progress_update', {
+          roomId: roomData.id,
+          progress: 100,
+          wpm: finalStats.wpm,
+          accuracy: finalStats.accuracy,
+        });
+      }
+      p2pEngine.sendTelemetry(100, finalStats.wpm, finalStats.accuracy);
+    }
+
     try {
       confetti({
         particleCount: 120,
@@ -236,6 +250,17 @@ export const App: React.FC = () => {
     ? `${roomData.snippetTitle.toLowerCase().replace(/[^a-z0-9]/g, '_')}${LANGUAGE_META[selectedLanguage].ext}`
     : activeSnippet.filename;
 
+  // Typing lock condition: prevent typing during modals or multiplayer lobby/countdown
+  const isTypingDisabled =
+    isAuthOpen ||
+    isArenaOpen ||
+    isGarageOpen ||
+    isAdminOpen ||
+    isAdminDashboardOpen ||
+    showSummary ||
+    isMultiplayerOpen ||
+    Boolean(roomData && roomData.status !== 'RACING');
+
   // Typing Engine Hook
   const {
     currentIndex,
@@ -252,6 +277,7 @@ export const App: React.FC = () => {
     targetText: effectiveSnippetCode,
     isStrict,
     onFinish: handleRaceFinish,
+    disabled: isTypingDisabled,
   });
 
   const equippedSkin = skins.find(s => s.id === equippedSkinId) || skins[0];
@@ -314,7 +340,7 @@ export const App: React.FC = () => {
 
   // Throttled Multiplayer Progress Broadcast (Socket.io & P2P WebRTC)
   useEffect(() => {
-    if (roomData && isStarted && !isFinished) {
+    if (roomData && (isStarted || isFinished)) {
       if (socketConnected && socketRef.current) {
         socketRef.current.emit('race:progress_update', {
           roomId: roomData.id,
@@ -412,6 +438,7 @@ export const App: React.FC = () => {
     setShowSummary(false);
     if (!roomData || roomData.status === 'FINISHED') {
       setRoomData(null);
+      lastMultiplayerStatusRef.current = null;
     }
     await handleGenerateUniqueSnippet();
     setAiRacers(prev => prev.map(bot => ({ ...bot, progress: 0 })));
@@ -575,6 +602,7 @@ export const App: React.FC = () => {
           if (!netState) {
             setRoomData(null);
             setMultiplayerRacers([]);
+            lastMultiplayerStatusRef.current = null;
             return;
           }
           setRoomData({
@@ -605,9 +633,22 @@ export const App: React.FC = () => {
           }));
           setMultiplayerRacers(mapped);
 
-          if (netState.status === 'RACING') {
+          if (netState.status === 'COUNTDOWN') {
             setIsMultiplayerOpen(false);
-            resetEngine();
+            soundEngine.playCountdown(netState.countdownSeconds === 1);
+          } else if (netState.status === 'RACING') {
+            if (lastMultiplayerStatusRef.current !== 'RACING') {
+              lastMultiplayerStatusRef.current = 'RACING';
+              setIsMultiplayerOpen(false);
+              resetEngine();
+              soundEngine.playCountdown(true);
+              if (typeof window !== 'undefined') {
+                (document.activeElement as HTMLElement)?.blur();
+                window.focus();
+              }
+            }
+          } else {
+            lastMultiplayerStatusRef.current = netState.status;
           }
         },
         undefined,
@@ -650,6 +691,7 @@ export const App: React.FC = () => {
           if (!netState) {
             setRoomData(null);
             setMultiplayerRacers([]);
+            lastMultiplayerStatusRef.current = null;
             return;
           }
           setRoomData({
@@ -684,9 +726,22 @@ export const App: React.FC = () => {
           }));
           setMultiplayerRacers(mapped);
 
-          if (netState.status === 'RACING') {
+          if (netState.status === 'COUNTDOWN') {
             setIsMultiplayerOpen(false);
-            resetEngine();
+            soundEngine.playCountdown(netState.countdownSeconds === 1);
+          } else if (netState.status === 'RACING') {
+            if (lastMultiplayerStatusRef.current !== 'RACING') {
+              lastMultiplayerStatusRef.current = 'RACING';
+              setIsMultiplayerOpen(false);
+              resetEngine();
+              soundEngine.playCountdown(true);
+              if (typeof window !== 'undefined') {
+                (document.activeElement as HTMLElement)?.blur();
+                window.focus();
+              }
+            }
+          } else {
+            lastMultiplayerStatusRef.current = netState.status;
           }
         }
       ).then(() => {
@@ -711,6 +766,7 @@ export const App: React.FC = () => {
     setRoomData(null);
     setMultiplayerRacers([]);
     setIsMultiplayerOpen(false);
+    lastMultiplayerStatusRef.current = null;
     resetEngine();
   };
 
@@ -1019,7 +1075,16 @@ export const App: React.FC = () => {
         </div>
 
         {/* ACTUAL MULTI-LINE IDE CODE EDITOR VIEWPORT */}
-        <div className="glass-panel rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col justify-between">
+        <div
+          tabIndex={0}
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              (document.activeElement as HTMLElement)?.blur();
+              window.focus();
+            }
+          }}
+          className="glass-panel rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col justify-between cursor-text focus:outline-none relative"
+        >
           {/* IDE Window Title Bar */}
           <div className="flex items-center justify-between bg-slate-950 px-4 py-2.5 border-b border-slate-800/80">
             <div className="flex items-center gap-2">
@@ -1078,6 +1143,21 @@ export const App: React.FC = () => {
 
           {/* Code Typing Area with Real Multi-Line Numbering & Indentation */}
           <div className="p-4 sm:p-6 flex bg-[#0d1117] font-mono select-none overflow-x-auto relative">
+            {/* Real-time Multiplayer Countdown Overlay */}
+            {roomData && roomData.status === 'COUNTDOWN' && (
+              <div className="absolute inset-0 z-40 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-none select-none">
+                <span className="text-xs uppercase font-extrabold tracking-widest text-amber-400 mb-1">
+                  MULTIPLAYER HEAT STARTING
+                </span>
+                <span className="text-7xl sm:text-8xl font-black font-mono text-transparent bg-clip-text bg-gradient-to-r from-amber-400 via-orange-400 to-rose-400 scale-110 drop-shadow-[0_0_35px_rgba(245,158,11,0.6)] animate-pulse">
+                  {roomData.countdownSeconds > 0 ? roomData.countdownSeconds : 'GO!'}
+                </span>
+                <span className="text-xs text-slate-300 font-mono mt-3">
+                  Get ready on your keyboard!
+                </span>
+              </div>
+            )}
+
             {/* Gutter: Dynamic Line Numbers matching actual code lines */}
             <div className="flex flex-col text-slate-600 select-none text-right text-sm sm:text-base pr-4 border-r border-slate-800/80 leading-7 font-mono shrink-0 select-none">
               {codeLines.map((_, lineIdx) => {

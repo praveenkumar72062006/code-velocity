@@ -149,6 +149,17 @@ export function useTypingEngine({
     (e: KeyboardEvent) => {
       if (disabled || isFinished) return;
 
+      // Ignore if user is currently typing inside an input, textarea or contentEditable
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
       // Deploy Nitro with Enter when nitro is fully ready and NOT at a newline character
       const expectedChar = targetText[currentIndex];
       if (e.key === 'Enter' && nitroProgress >= 100 && expectedChar !== '\n') {
